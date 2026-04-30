@@ -6,66 +6,46 @@ import pandas as pd
 st.set_page_config(layout="wide")
 st.title("🧸양도세치기 배당시뮬")
 
-# ==========================================
-# 🛠️ 핵심 마법: 야후 파이낸스 데이터 기억(캐싱) 
-# (야후가 싫어하는 위장술 코드는 제거했습니다!)
-# ==========================================
-@st.cache_data(ttl=3600)  # "한 번 가져온 데이터는 3600초(1시간) 동안 기억해라!"
+# 🛠️ 핵심 마법: 야후 파이낸스 데이터 기억(캐싱)
+@st.cache_data(ttl=3600)
 def fetch_data(ticker_name):
-    # 위장술(session) 없이 순수하게 호출합니다.
     data = yf.Ticker(ticker_name)
     df = data.history(period="max", auto_adjust=False)
     
-    # 날짜 시간 찌꺼기 깔끔하게 제거
     if not df.empty:
         df.index = df.index.tz_localize(None).normalize()
         
-    # 배당금 데이터도 나중에 쓰기 좋게 미리 뽑아둡니다.
     if 'Dividends' in df.columns:
         divs = df[df['Dividends'] > 0]['Dividends']
     else:
         divs = pd.Series(dtype=float)
         
     return df, divs
-# ==========================================
 
-# 1. 왼쪽 사이드바(메뉴)에 설정칸 만들기
+# 1. 왼쪽 사이드바(메뉴) 설정
 st.sidebar.header("⚙️ 전략 설정")
 ticker_input = st.sidebar.text_input("티커 (예: SCHD, ARCC)", "ARCC")
 ticker = ticker_input.upper() 
-
-# 투자자금 입력칸 (기본값 10000)
 invest_capital = st.sidebar.number_input("투자자금 (달러)", min_value=0, value=10000, step=1000)
-
-# 매수가 기준과 매도허용기간
 buy_type = st.sidebar.selectbox("매수가 기준", ["D-1 종가", "D-1 시가", "D-2 종가", "D-2 시가"])
 sell_window = st.sidebar.number_input("매도허용기간 (N거래일)예:0,5", min_value=0, max_value=600, value=0)
-
-# 최근 5년 데이터만 보기 체크박스 
 recent_5y_only = st.sidebar.checkbox("최근 5년 데이터만 보기", value=False)
 
-# 2. 버튼을 누르면 계산 시작!
+# 2. 백테스트 실행
 if st.sidebar.button("백테스트 실행!"):
-    with st.spinner(f'{ticker} 데이터를 가져오고 계산하는 중입니다...'):
-        
-        # 🛠️ 캐싱 함수를 사용해서 데이터 불러오기
+    with st.spinner(f'{ticker} 데이터를 가져오는 중입니다...'):
         df, divs = fetch_data(ticker)
         
         if df.empty:
             st.error(f"{ticker}의 주가 데이터를 찾을 수 없습니다.")
         else:
-            # 최근 5년 데이터 필터링 로직
             if recent_5y_only and not divs.empty:
-                # 오늘 기준으로 5년 전 날짜 계산
-                cutoff_date = pd.Timestamp.now().tz_localize(None).normalize() - pd.DateOffset(years=5)
-                # 5년 전 날짜 이후의 배당금 데이터만 남기기
+                cutoff_date = pd.Timestamp.now().normalize() - pd.DateOffset(years=5)
                 divs = divs[divs.index >= cutoff_date]
             
             results = []
             
-            # 3. 시뮬레이션 시작
             for ex_date, div_amount in divs.items():
-                
                 try:
                     idx = df.index.get_loc(ex_date)
                 except KeyError:
@@ -73,8 +53,8 @@ if st.sidebar.button("백테스트 실행!"):
                 
                 if idx < 2 or idx + sell_window >= len(df):
                     continue
-                    
-                # 사용자가 선택한 '매수가'
+                
+                # 매수가 결정
                 if buy_type == "D-1 종가":
                     buy_price = df.iloc[idx-1]['Close']
                 elif buy_type == "D-1 시가":
@@ -84,85 +64,81 @@ if st.sidebar.button("백테스트 실행!"):
                 else: 
                     buy_price = df.iloc[idx-2]['Open']
                     
-                # 세후 배당금
                 after_tax_div = div_amount * 0.85
-                
-                # 손익분기점 (BEP)
                 bep = buy_price - after_tax_div
                 
-                # 매도허용기간 동안의 장중 '최고가' 찾기
+                # 설정된 매도허용기간 내 결과 분석
                 window_data = df.iloc[idx : idx + sell_window + 1]
                 max_high = window_data['High'].max()
-                
-                # 성공 판별 (최고가가 BEP 이상인가?)
                 is_success = max_high >= bep
                 
-                # 수익률 계산 로직
+                # === 원금 회복 날짜 및 소요 기간 계산 로직 추가 ===
+                recovery_date = "-"
+                recovery_days_trading = "-"
+                recovery_days_calendar = "-"
+                
                 if is_success:
-                    # 성공: 수익률은 (세후배당금 / 매수가) * 100 으로 고정
                     profit_pct = (after_tax_div / buy_price) * 100
                 else:
-                    # 실패: 매도기간 마지막 날 종가 매도 처리 + 세후 배당금 수령
+                    # 실패 시: 매도기간 이후 데이터에서 BEP를 회복하는 첫 날을 찾음
+                    future_data = df.iloc[idx:] 
+                    # 장중 고가가 BEP 이상이 되는 날들 중 가장 빠른 날
+                    recovery_series = future_data[future_data['High'] >= bep]
+                    
+                    if not recovery_series.empty:
+                        recovery_dt = recovery_series.index[0]
+                        recovery_date = recovery_dt.strftime("%Y-%m-%d")
+                        
+                        # 소요 기간 계산
+                        # 1. 거래일 기준 (배당락일부터 회복일까지의 행 개수)
+                        recovery_days_trading = f"{(df.index.get_loc(recovery_dt) - idx)}거래일"
+                        # 2. 달력 기준 (단순 날짜 차이)
+                        recovery_days_calendar = f"{(recovery_dt - ex_date).days}일"
+                    
                     sell_price = window_data.iloc[-1]['Close']
                     profit_pct = ((sell_price + after_tax_div - buy_price) / buy_price) * 100
-                    
+                # ===============================================
+
                 results.append({
                     "배당락일": ex_date.strftime("%Y-%m-%d"),
-                    "세후배당금": round(after_tax_div, 4),
                     "매수가": round(buy_price, 2),
-                    "BEP": round(bep, 2),
-                    "기간내 최고가": round(max_high, 2),
+                    "세후배당금": round(after_tax_div, 4),
+                    "손익분기점": round(bep, 4),
                     "성공여부": "성공" if is_success else "실패",
-                    "수익률(%)": round(profit_pct, 2)
+                    "수익률(%)": round(profit_pct, 2),
+                    "원금 회복 날짜": recovery_date,
+                    "소요 기간(거래일)": recovery_days_trading,
+                    "소요 기간(달력)": recovery_days_calendar
                 })
                 
-            # 4. 화면에 결과 보여주기
             res_df = pd.DataFrame(results)
             
             if len(res_df) > 0:
                 st.success(f"총 {len(res_df)}회의 과거 배당 이벤트 분석 완료!")
+                st.info(f"📅 백테스트 기간: {res_df['배당락일'].iloc[0]} ~ {res_df['배당락일'].iloc[-1]}")
                 
-                # 백테스트 시작 및 종료 기간 표기
-                start_date = res_df['배당락일'].iloc[0]
-                end_date = res_df['배당락일'].iloc[-1]
-                st.info(f"📅 백테스트 기간: {start_date} ~ {end_date}")
-                
-                # 핵심 지표 계산
+                # 지표 계산
                 success_rate = (res_df['성공여부'] == '성공').mean() * 100
                 avg_profit = res_df[res_df['성공여부'] == '성공']['수익률(%)'].mean()
                 avg_loss = res_df[res_df['성공여부'] == '실패']['수익률(%)'].mean()
-                
-                # 1회 기대수익률 및 손익비 계산
                 expected_return = res_df['수익률(%)'].mean()
                 
-                if pd.isna(avg_loss) or avg_loss == 0:
-                    pl_ratio_str = "∞ (실패없음)"
-                else:
-                    pl_ratio = abs(avg_profit / avg_loss)
-                    pl_ratio_str = f"{pl_ratio:.2f}"
-                    
-                # 절세예상액 계산 (수익률이 백분율이므로 100으로 나눔)
-                if pd.notna(avg_profit):
-                    tax_saving = (avg_profit / 100) * invest_capital * 0.22
-                else:
-                    tax_saving = 0
+                tax_saving = (avg_profit / 100) * invest_capital * 0.22 if pd.notna(avg_profit) else 0
                 
-                # 멋진 카드 형태로 요약 보여주기 
                 col1, col2, col3, col4, col5, col6 = st.columns(6)
                 col1.metric("전략 승률", f"{success_rate:.1f}%")
                 col2.metric("성공 평균수익률", f"{avg_profit:.2f}%" if pd.notna(avg_profit) else "0%")
                 col3.metric("실패 평균손실률", f"{avg_loss:.2f}%" if pd.notna(avg_loss) else "0%")
-                col4.metric("손익비", pl_ratio_str)
+                col4.metric("손익비", f"{abs(avg_profit/avg_loss):.2f}" if (pd.notna(avg_loss) and avg_loss != 0) else "∞")
                 col5.metric("1회 기대수익률", f"{expected_return:.2f}%")
                 col6.metric("1회 절세예상액", f"${tax_saving:.2f}")
                 
-                # 그래프 (점 형태의 산점도)
-                st.write("### 📈 수익률 분포 그래프 (점)")
+                st.write("### 📈 수익률 분포 그래프")
                 st.scatter_chart(res_df, x='배당락일', y='수익률(%)', color='성공여부')
 
-                # 상세 데이터 표
-                st.write("### 📊 회차별 상세 백테스트 결과")
-                st.dataframe(res_df)
-                
+                st.write("### 📊 회차별 상세 결과 (실패 시 원금 회복 정보 포함)")
+                # 표의 가독성을 위해 열 순서 재배치
+                display_df = res_df[["배당락일", "매수가", "세후배당금", "손익분기점", "성공여부", "수익률(%)", "원금 회복 날짜", "소요 기간(거래일)", "소요 기간(달력)"]]
+                st.dataframe(display_df, use_container_width=True)
             else:
-                st.warning("분석할 수 있는 데이터가 없습니다. (해당 기간 내에 배당 내역이 없을 수 있습니다.)")
+                st.warning("분석할 수 있는 데이터가 없습니다.")
