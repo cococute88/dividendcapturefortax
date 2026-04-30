@@ -1,23 +1,19 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import requests  # 야후 문지기를 속이기 위해 새로 고용한 '인터넷 요청' 조수입니다!
 
 # 웹사이트 넓게 쓰기
 st.set_page_config(layout="wide")
 st.title("🧸양도세치기 배당시뮬")
 
 # ==========================================
-# 🛠️ 핵심 마법 1: 야후 파이낸스 차단 우회 및 데이터 기억(캐싱)
+# 🛠️ 핵심 마법: 야후 파이낸스 데이터 기억(캐싱) 
+# (야후가 싫어하는 위장술 코드는 제거했습니다!)
 # ==========================================
 @st.cache_data(ttl=3600)  # "한 번 가져온 데이터는 3600초(1시간) 동안 기억해라!"
 def fetch_data(ticker_name):
-    # 1. 평범한 크롬(Chrome) 브라우저인 척 신분증(User-agent)을 만듭니다.
-    session = requests.Session()
-    session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
-    
-    # 2. 위조한 신분증(session)을 내밀면서 데이터를 달라고 합니다.
-    data = yf.Ticker(ticker_name, session=session)
+    # 위장술(session) 없이 순수하게 호출합니다.
+    data = yf.Ticker(ticker_name)
     df = data.history(period="max", auto_adjust=False)
     
     # 날짜 시간 찌꺼기 깔끔하게 제거
@@ -52,11 +48,11 @@ recent_5y_only = st.sidebar.checkbox("최근 5년 데이터만 보기", value=Fa
 if st.sidebar.button("백테스트 실행!"):
     with st.spinner(f'{ticker} 데이터를 가져오고 계산하는 중입니다...'):
         
-        # 🛠️ 핵심 마법 2: 위에서 만든 캐싱 함수를 사용해서 데이터 불러오기
+        # 🛠️ 캐싱 함수를 사용해서 데이터 불러오기
         df, divs = fetch_data(ticker)
         
         if df.empty:
-            st.error(f"{ticker}의 주가 데이터를 찾을 수 없습니다. (또는 야후 파이낸스 일시적 차단)")
+            st.error(f"{ticker}의 주가 데이터를 찾을 수 없습니다.")
         else:
             # 최근 5년 데이터 필터링 로직
             if recent_5y_only and not divs.empty:
