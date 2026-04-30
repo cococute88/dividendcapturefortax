@@ -1,10 +1,37 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
+import requests  # 야후 문지기를 속이기 위해 새로 고용한 '인터넷 요청' 조수입니다!
 
 # 웹사이트 넓게 쓰기
 st.set_page_config(layout="wide")
 st.title("🧸양도세치기 배당시뮬")
+
+# ==========================================
+# 🛠️ 핵심 마법 1: 야후 파이낸스 차단 우회 및 데이터 기억(캐싱)
+# ==========================================
+@st.cache_data(ttl=3600)  # "한 번 가져온 데이터는 3600초(1시간) 동안 기억해라!"
+def fetch_data(ticker_name):
+    # 1. 평범한 크롬(Chrome) 브라우저인 척 신분증(User-agent)을 만듭니다.
+    session = requests.Session()
+    session.headers['User-agent'] = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'
+    
+    # 2. 위조한 신분증(session)을 내밀면서 데이터를 달라고 합니다.
+    data = yf.Ticker(ticker_name, session=session)
+    df = data.history(period="max", auto_adjust=False)
+    
+    # 날짜 시간 찌꺼기 깔끔하게 제거
+    if not df.empty:
+        df.index = df.index.tz_localize(None).normalize()
+        
+    # 배당금 데이터도 나중에 쓰기 좋게 미리 뽑아둡니다.
+    if 'Dividends' in df.columns:
+        divs = df[df['Dividends'] > 0]['Dividends']
+    else:
+        divs = pd.Series(dtype=float)
+        
+    return df, divs
+# ==========================================
 
 # 1. 왼쪽 사이드바(메뉴)에 설정칸 만들기
 st.sidebar.header("⚙️ 전략 설정")
@@ -18,28 +45,20 @@ invest_capital = st.sidebar.number_input("투자자금 (달러)", min_value=0, v
 buy_type = st.sidebar.selectbox("매수가 기준", ["D-1 종가", "D-1 시가", "D-2 종가", "D-2 시가"])
 sell_window = st.sidebar.number_input("매도허용기간 (N거래일)예:0,5", min_value=0, max_value=600, value=0)
 
-# === 수정 3: 최근 5년 데이터만 보기 체크박스 추가 ===
+# 최근 5년 데이터만 보기 체크박스 
 recent_5y_only = st.sidebar.checkbox("최근 5년 데이터만 보기", value=False)
 
 # 2. 버튼을 누르면 계산 시작!
 if st.sidebar.button("백테스트 실행!"):
-    with st.spinner(f'{ticker} 데이터를 야후에서 가져오는 중입니다...'):
+    with st.spinner(f'{ticker} 데이터를 가져오고 계산하는 중입니다...'):
         
-        # 주가 및 배당금 데이터 한 번에 불러오기 (수정주가 미반영)
-        data = yf.Ticker(ticker)
-        df = data.history(period="max", auto_adjust=False)
+        # 🛠️ 핵심 마법 2: 위에서 만든 캐싱 함수를 사용해서 데이터 불러오기
+        df, divs = fetch_data(ticker)
         
         if df.empty:
-            st.error(f"{ticker}의 주가 데이터를 찾을 수 없습니다. 티커명을 다시 확인해 주세요.")
+            st.error(f"{ticker}의 주가 데이터를 찾을 수 없습니다. (또는 야후 파이낸스 일시적 차단)")
         else:
-            df.index = df.index.tz_localize(None).normalize()
-            
-            if 'Dividends' in df.columns:
-                divs = df[df['Dividends'] > 0]['Dividends']
-            else:
-                divs = pd.Series(dtype=float)
-            
-            # === 수정 3: 최근 5년 데이터 필터링 로직 ===
+            # 최근 5년 데이터 필터링 로직
             if recent_5y_only and not divs.empty:
                 # 오늘 기준으로 5년 전 날짜 계산
                 cutoff_date = pd.Timestamp.now().tz_localize(None).normalize() - pd.DateOffset(years=5)
